@@ -1,0 +1,182 @@
+#!/usr/bin/python3
+from argparse import ArgumentParser
+from os import path, getcwd, makedirs
+from json import load
+from subprocess import run, DEVNULL
+from shutil import rmtree
+import logging
+
+DEFAULT_LIBRARIES_DIRECTORY = 'lib'
+DEFAULT_PROJECT_FILE_NAME = 'project.json'
+
+LOGGER: logging.Logger
+
+
+class VT100Formatter(logging.Formatter):
+
+    green = "\x1b[32;20m"
+    yellow = "\x1b[33;20m"
+    red = "\x1b[31;20m"
+    reset = "\x1b[0m"
+    format = "%(asctime)s [%(name)s][%(levelname)s] %(message)s"
+
+    FORMATS = {
+        logging.DEBUG: green + format + reset,
+        logging.INFO: green + format + reset,
+        logging.WARNING: yellow + format + reset,
+        logging.ERROR: red + format + reset,
+    }
+
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno)
+        formatter = logging.Formatter(log_fmt)
+        return formatter.format(record)
+
+
+def initialize_logging(name, is_verbose=False):
+    global LOGGER
+    LOGGER = logging.getLogger(name)
+    LOGGER.setLevel(logging.DEBUG if is_verbose else logging.INFO)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG)
+    ch.setFormatter(VT100Formatter())
+    LOGGER.addHandler(ch)
+
+
+def D(text):
+    LOGGER.debug(text)
+
+
+def I(text):
+    LOGGER.info(text)
+
+
+def W(text):
+    LOGGER.warning(text)
+
+
+def E(text):
+    LOGGER.error(text)
+
+
+class ProjectFile:
+    def __init__(self, path_to_file: str = None) -> None:
+        if path_to_file is None:
+            path_to_file = path.join(getcwd(), DEFAULT_PROJECT_FILE_NAME)
+        self.base_directory = path.dirname(path_to_file)
+        D(f"Loading project file {path_to_file}")
+        with open(path_to_file) as project_file:
+            self.content = load(project_file)
+
+    def name(self) -> str:
+        if not 'name' in self.content:
+            return path.basename(self.base_directory)
+        else:
+            return self.content['name']
+
+    def libraries_destination(self) -> str:
+        relative_library_destination = DEFAULT_LIBRARIES_DIRECTORY
+        if 'libraries_destination' in self.content:
+            relative_library_destination = self.content['libraries_destination']
+        return path.join(self.base_directory, relative_library_destination)
+
+    def libraries(self) -> list:
+        if 'libraries' in self.content:
+            return self.content['libraries']
+        else:
+            return []
+
+    def __str__(self) -> str:
+        return str(self.content)
+
+
+class Library:
+    def __init__(self, name: str, destination_path: str) -> None:
+        if 'git@' in name:
+            self.repository = name
+            self.name = name.split('/')[-1]
+        elif '/' in name:
+            self.repository = f'git@github.com:{name}'
+            self.name = name.split('/')[-1]
+        else:
+            self.repository = f'git@github.com:grzegorz-grzeda/{name}'
+            self.name = name
+        self.destination = path.join(destination_path, self.name)
+
+    def clone(self):
+        I(f"Cloning library '{self.name}'")
+        run(f'git clone {self.repository} {self.destination}',
+            shell=True, stderr=DEVNULL, stdout=DEVNULL)
+
+    def __str__(self) -> str:
+        return f'{self.name} [{self.repository}] @ {self.destination}'
+
+
+class Libraries:
+    def __init__(self, project: ProjectFile) -> None:
+        self.libraries = {}
+        self.cloned = set()
+        self.visited = set()
+        for library in project.libraries():
+            new_library = Library(library, project.libraries_destination())
+            self.libraries[new_library.name] = new_library
+            new_library.clone()
+            self.cloned.add(new_library.name)
+
+        while True:
+            libraries_to_visit = self.cloned.difference(self.visited)
+            if not libraries_to_visit:
+                break
+            library_name = list(libraries_to_visit)[0]
+            local_project = ProjectFile(path.join(
+                project.libraries_destination(), library_name, DEFAULT_PROJECT_FILE_NAME))
+            for library in local_project.libraries():
+                new_library = Library(library, project.libraries_destination())
+                if new_library.name not in self.libraries:
+                    self.libraries[new_library.name] = new_library
+                    new_library.clone()
+                    self.cloned.add(new_library.name)
+            self.visited.add(library_name)
+
+
+def perform_download():
+    project = ProjectFile()
+    if len(project.libraries()) < 1:
+        return
+    I("Cleaning project space")
+    libraries_destination = project.libraries_destination()
+    rmtree(libraries_destination, ignore_errors=True)
+    makedirs(libraries_destination, exist_ok=True)
+
+    libraries = Libraries(project)
+    I("Generating CMakeLists file")
+    cmake_content = [
+        f'add_subdirectory({library})' for library in libraries.visited]
+    with open(path.join(project.libraries_destination(), 'CMakeLists.txt'), 'w') as cmake_file:
+        cmake_file.write('# Generated by g2epm. DO NOT EDIT!\n')
+        cmake_file.write("\n".join(cmake_content))
+
+
+ACTIONS = {'download': perform_download}
+
+
+def parse_arguments():
+    parser = ArgumentParser(description="Greg's embedded project manager")
+    parser.add_argument('action', choices=ACTIONS.keys(),
+                        default=list(ACTIONS.keys())[0], help='What to do')
+    parser.add_argument('-V', '--verbose',
+                        help='Increase verbosity', action='store_true')
+    return parser.parse_args()
+
+
+def main():
+    args = parse_arguments()
+    initialize_logging('g2epm', args.verbose)
+    try:
+        ACTIONS[args.action]()
+    except Exception as e:
+        E(e)
+
+
+if __name__ == '__main__':
+    main()
