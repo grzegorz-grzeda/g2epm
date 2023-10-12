@@ -104,9 +104,11 @@ class Library:
         self.destination = path.join(destination_path, self.name)
 
     def clone(self):
-        I(f"Cloning library '{self.name}'")
-        run(f'git clone {self.repository} {self.destination}',
-            shell=True, stderr=DEVNULL, stdout=DEVNULL)
+        D(f"Cloning library '{self.name}'")
+        result = run(f'git clone {self.repository} {self.destination}',
+                     shell=True, stderr=DEVNULL, stdout=DEVNULL)
+        if result.returncode != 0:
+            raise Exception(f"Could not clone library '{self.name}'")
 
     def __str__(self) -> str:
         return f'{self.name} [{self.repository}] @ {self.destination}'
@@ -114,6 +116,8 @@ class Library:
 
 class Libraries:
     def __init__(self, project: ProjectFile) -> None:
+        if not project.libraries():
+            return
         self.libraries = {}
         self.cloned = set()
         self.visited = set()
@@ -128,8 +132,12 @@ class Libraries:
             if not libraries_to_visit:
                 break
             library_name = list(libraries_to_visit)[0]
-            local_project = ProjectFile(path.join(
-                project.libraries_destination(), library_name, DEFAULT_PROJECT_FILE_NAME))
+            try:
+                local_project = ProjectFile(path.join(
+                    project.libraries_destination(), library_name, DEFAULT_PROJECT_FILE_NAME))
+            except:
+                self.visited.add(library_name)
+                continue
             for library in local_project.libraries():
                 new_library = Library(library, project.libraries_destination())
                 if new_library.name not in self.libraries:
@@ -140,16 +148,17 @@ class Libraries:
 
 
 def perform_download():
+    I("Downloading project libraries")
     project = ProjectFile()
     if len(project.libraries()) < 1:
         return
-    I("Cleaning project space")
+    D("Cleaning project space")
     libraries_destination = project.libraries_destination()
     rmtree(libraries_destination, ignore_errors=True)
     makedirs(libraries_destination, exist_ok=True)
 
     libraries = Libraries(project)
-    I("Generating CMakeLists file")
+    D("Generating CMakeLists file")
     cmake_content = [
         f'add_subdirectory({library})' for library in libraries.visited]
     with open(path.join(project.libraries_destination(), 'CMakeLists.txt'), 'w') as cmake_file:
@@ -174,6 +183,7 @@ def main():
     initialize_logging('g2epm', args.verbose)
     try:
         ACTIONS[args.action]()
+        I("Done.")
     except Exception as e:
         E(e)
 
