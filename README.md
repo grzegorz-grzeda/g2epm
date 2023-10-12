@@ -24,7 +24,7 @@ The libraries have three options to be named:
 - `github-username/repo-name`
 - full path to git repository
 
-The first option will make `g2epm` to seek for the library in my `grzegorz-grzeda` repositories. This is temporary, I will set up a curated database with available libraries.
+The first option will make `g2epm` to seek for the library in the [official G2EPM repository](https://github.com/grzegorz-grzeda/g2epm-repository).
 
 The second option will clone a library from a specified repository, from a `github` user.
 
