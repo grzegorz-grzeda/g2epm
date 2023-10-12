@@ -28,6 +28,11 @@ from subprocess import run, DEVNULL
 from shutil import rmtree
 import logging
 
+CONFIGURATION_DIRECTORY = '.g2epm'
+REMOTE_REPOSITORY = 'git@github.com:grzegorz-grzeda/g2epm-repository.git'
+REMOTE_REPOSITORY_NAME = 'repository'
+REMOTE_REPOSITORY_FILE = 'repository.json'
+
 DEFAULT_LIBRARIES_DIRECTORY = 'lib'
 DEFAULT_PROJECT_FILE_NAME = 'project.json'
 
@@ -81,6 +86,39 @@ def E(text):
     LOGGER.error(text)
 
 
+class LocalConfiguration:
+    def __init__(self, verbose: bool) -> None:
+        user_path = path.expanduser('~')
+        self.configuration_directory = path.join(
+            user_path, CONFIGURATION_DIRECTORY)
+        self.repository_directory = path.join(
+            self.configuration_directory, REMOTE_REPOSITORY_NAME)
+        if not path.isdir(self.configuration_directory):
+            I("Creating configuration")
+            makedirs(self.configuration_directory)
+        if not path.isdir(self.repository_directory):
+            I("Downloading repository")
+            result = run(f'git clone --depth 1 {REMOTE_REPOSITORY} {self.repository_directory}',
+                         shell=True, stderr=None if verbose else DEVNULL, stdout=None if verbose else DEVNULL)
+            if result.returncode != 0:
+                raise Exception("Could not download the repository!")
+        else:
+            I("Updating repository")
+            result = run('git pull', cwd=self.repository_directory,
+                         shell=True, stderr=None if verbose else DEVNULL, stdout=None if verbose else DEVNULL)
+            if result.returncode != 0:
+                W("Could not update the repository! Proceeding with potentially outdated information!")
+
+    def get_repostory_for_library(self, library_name: str) -> str:
+        with open(path.join(self.repository_directory, REMOTE_REPOSITORY_FILE)) as repository_file:
+            repository = load(repository_file)
+            try:
+                return repository['libraries'][library_name]
+            except:
+                raise Exception(
+                    f"Could not find library '{library_name}' in repository!")
+
+
 class ProjectFile:
     def __init__(self, path_to_file: str = None) -> None:
         if path_to_file is None:
@@ -113,7 +151,7 @@ class ProjectFile:
 
 
 class Library:
-    def __init__(self, name: str, destination_path: str) -> None:
+    def __init__(self, name: str, destination_path: str, configuration: LocalConfiguration) -> None:
         if 'git@' in name:
             self.repository = name
             self.name = name.split('/')[-1]
@@ -121,7 +159,7 @@ class Library:
             self.repository = f'git@github.com:{name}'
             self.name = name.split('/')[-1]
         else:
-            self.repository = f'git@github.com:grzegorz-grzeda/{name}'
+            self.repository = configuration.get_repostory_for_library(name)
             self.name = name
         self.destination = path.join(destination_path, self.name)
 
@@ -137,14 +175,15 @@ class Library:
 
 
 class Libraries:
-    def __init__(self, project: ProjectFile) -> None:
+    def __init__(self, project: ProjectFile, configuration: LocalConfiguration) -> None:
         if not project.libraries():
             return
         self.libraries = {}
         self.cloned = set()
         self.visited = set()
         for library in project.libraries():
-            new_library = Library(library, project.libraries_destination())
+            new_library = Library(
+                library, project.libraries_destination(), configuration)
             self.libraries[new_library.name] = new_library
             new_library.clone()
             self.cloned.add(new_library.name)
@@ -161,7 +200,8 @@ class Libraries:
                 self.visited.add(library_name)
                 continue
             for library in local_project.libraries():
-                new_library = Library(library, project.libraries_destination())
+                new_library = Library(
+                    library, project.libraries_destination(), configuration)
                 if new_library.name not in self.libraries:
                     self.libraries[new_library.name] = new_library
                     new_library.clone()
@@ -169,7 +209,7 @@ class Libraries:
             self.visited.add(library_name)
 
 
-def perform_download():
+def perform_download(configuration: LocalConfiguration):
     I("Downloading project libraries")
     project = ProjectFile()
     if len(project.libraries()) < 1:
@@ -179,7 +219,7 @@ def perform_download():
     rmtree(libraries_destination, ignore_errors=True)
     makedirs(libraries_destination, exist_ok=True)
 
-    libraries = Libraries(project)
+    libraries = Libraries(project, configuration)
     D("Generating CMakeLists file")
     cmake_content = [
         f'add_subdirectory({library})' for library in libraries.visited]
@@ -203,8 +243,9 @@ def parse_arguments():
 def main():
     args = parse_arguments()
     initialize_logging('g2epm', args.verbose)
+    configuration = LocalConfiguration(args.verbose)
     try:
-        ACTIONS[args.action]()
+        ACTIONS[args.action](configuration)
         I("Done.")
     except Exception as e:
         E(e)
