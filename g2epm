@@ -89,6 +89,7 @@ def E(text):
 class LocalConfiguration:
     def __init__(self, verbose: bool) -> None:
         user_path = path.expanduser('~')
+        self.verbose = verbose
         self.configuration_directory = path.join(
             user_path, CONFIGURATION_DIRECTORY)
         self.repository_directory = path.join(
@@ -115,18 +116,25 @@ class LocalConfiguration:
             try:
                 return repository['libraries'][library_name]
             except:
-                raise Exception(
-                    f"Could not find library '{library_name}' in repository!")
+                W(f"Could not find library '{library_name}' in repository!")
+                W(f"Defaulting to grzegorz-grzeda/{library_name} option.")
+                return f"git@github.com:grzegorz-grzeda/{library_name}.git"
 
 
 class ProjectFile:
-    def __init__(self, path_to_file: str = None) -> None:
+    def __init__(self, path_to_file: str = None, verbose: bool = False) -> None:
         if path_to_file is None:
             path_to_file = path.join(getcwd(), DEFAULT_PROJECT_FILE_NAME)
         self.base_directory = path.dirname(path_to_file)
         D(f"Loading project file {path_to_file}")
         with open(path_to_file) as project_file:
             self.content = load(project_file)
+        if "preconditions" in self.content:
+            D(f"Initializing '{self.name()}'")
+            for step in self.content['preconditions']:
+                D(step)
+                run(step, cwd=self.base_directory, shell=True,
+                    stderr=None if verbose else DEVNULL, stdout=None if verbose else DEVNULL)
 
     def name(self) -> str:
         if not 'name' in self.content:
@@ -195,7 +203,7 @@ class Libraries:
             library_name = list(libraries_to_visit)[0]
             try:
                 local_project = ProjectFile(path.join(
-                    project.libraries_destination(), library_name, DEFAULT_PROJECT_FILE_NAME))
+                    project.libraries_destination(), library_name, DEFAULT_PROJECT_FILE_NAME), verbose=configuration.verbose)
             except:
                 self.visited.add(library_name)
                 continue
@@ -211,7 +219,7 @@ class Libraries:
 
 def perform_download(configuration: LocalConfiguration):
     I("Downloading project libraries")
-    project = ProjectFile()
+    project = ProjectFile(verbose=configuration.verbose)
     if len(project.libraries()) < 1:
         return
     D("Cleaning project space")
